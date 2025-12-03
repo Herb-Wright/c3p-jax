@@ -1,0 +1,2 @@
+jax[cuda]  # If you don't have CUDA, use CPU.
+chex

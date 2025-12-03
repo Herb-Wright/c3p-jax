@@ -1,0 +1,15 @@
+[project]
+name = "c3p_jax"
+version = "0.0.1"
+description = "C3+ implemented in JAX"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Herbie Wright", email = "herbiew@seas.upenn.edu"}]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+
+
+[tool.setuptools]
+packages=["c3p_jax"]
