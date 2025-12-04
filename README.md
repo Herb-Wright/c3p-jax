@@ -1,7 +1,9 @@
 
 # C3+ in JAX
 
-This repo implements [C3+](https://dairlab.github.io/push-anything/) in [JAX](https://docs.jax.dev/en/latest/) for GPU parallelization.
+This repo implements [C3+](https://dairlab.github.io/push-anything/) in [JAX](https://docs.jax.dev/en/latest/) for GPU parallelization. It runs very fast because the QP step is solved via Shur's complement and Cholesky solves. Here is a graph of the timing of this implementation of C3+ with the same parameters reported by Push anything for 4 objects:
+
+![](./resources/timing.png)
 
 
 ## Getting Started

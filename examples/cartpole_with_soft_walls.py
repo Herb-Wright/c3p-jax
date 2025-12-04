@@ -10,7 +10,7 @@ import lemkelcp as lcp
 from tqdm import trange
 
 from c3p_jax import (
-    LCSMatrices, create_rho_schedule, C3Problem, c3p_jit, C3Solution
+    LCSMatrices, create_rho_schedule, C3Problem, c3p_jit, C3Solution, c3p
 )
 
 
@@ -102,7 +102,7 @@ if __name__ == "__main__":
     c3_problem.x0 = jnp.array([-0.15, 0.1, 0.0, 0.0])
     var_weights = jnp.ones(c3_problem.n_vars(T))
     var_weights= var_weights.at[-2*T*c3_problem.nc():].set(100.0)
-    c3_problem.rho = create_rho_schedule(n_iters, var_weights, mult=2, offset=3)
+    c3_problem.rho = create_rho_schedule(n_iters, var_weights, mult=2, offset=3, start_with_0_rho=False)
 
 
     system_iter = 500

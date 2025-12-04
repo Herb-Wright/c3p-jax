@@ -3,6 +3,7 @@ The purpose of this file is to implement C3+ in JAX
 """
 import jax
 import jax.numpy as jnp
+import jax.scipy.linalg as jsl
 from chex import dataclass
 
 from .utils import place
@@ -100,11 +101,11 @@ def c3p(c3_problem: C3Problem, T: int, n_iters: int, end_on_qp: bool = True) -> 
             w =  c3_problem.rho[i-1] * w / rho
 
         # z step
-        M1, v1, M2, v2 = build_qp_matrices(
+        M1, v1, M2, v2 = build_qp_matrices_optimized(
             c3_problem.get_lcs_matrices(), c3_problem.Q, c3_problem.R, w, delta, T, rho, 
             c3_problem.x0, c3_problem.xd, c3_problem.Qf
         )
-        z = solve_equality_qp(M1, v1, M2, v2)
+        z = solve_equality_qp_fast(M1, v1, M2, v2)
 
         # λ step
         delta = project_step(z, w, T, c3_problem.nc())
@@ -113,11 +114,11 @@ def c3p(c3_problem: C3Problem, T: int, n_iters: int, end_on_qp: bool = True) -> 
         w = w + z - delta
     
     if end_on_qp:
-        M1, v1, M2, v2 = build_qp_matrices(
+        M1, v1, M2, v2 = build_qp_matrices_optimized(
             c3_problem.get_lcs_matrices(), c3_problem.Q, c3_problem.R, w, delta, T, rho, 
             c3_problem.x0, c3_problem.xd, c3_problem.Qf
         )
-        z = solve_equality_qp(M1, v1, M2, v2)
+        z = solve_equality_qp_fast(M1, v1, M2, v2)
     z = delta
 
     c3_sol = destructure_vars(
@@ -404,14 +405,181 @@ def build_qp_matrices(
     return M1, v1, M2, v2
 
 
-
 # Make a jittable wrapper
 c3p_jit = jax.jit(c3p, static_argnums=(1, 2, 3))
 
 
 
+def build_qp_matrices_optimized(
+    matrices: LCSMatrices,
+    Q: jnp.ndarray,
+    R: jnp.ndarray,
+    w: jnp.ndarray, 
+    delta: jnp.ndarray, 
+    T: int, 
+    rho: jnp.ndarray,  
+    x0: jnp.ndarray,  # (n_x)
+    xd: jnp.ndarray,  # (T+1, n_x)
+    Qf: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Optimized construction of QP matrices using Kronecker products and block assembly.
+    This avoids Python loops, reducing JAX compilation time and memory usage.
+    """
+    
+    # Unpack matrices
+    A, B, D, d = matrices.A, matrices.B, matrices.D, matrices.d
+    E, F, H, c = matrices.E, matrices.F, matrices.H, matrices.c
+    
+    nx = Q.shape[0]
+    nu = R.shape[0]
+    nc = F.shape[0]
+    
+    # --- 1. Build M1 (Cost Matrix) ---
+    # M1 is a block diagonal matrix. 
+    # Structure: [ BlkDiag(Q...Q, Qf), BlkDiag(R...R), 0...0 ]
+    
+    # Construct the sequence of Q matrices (T copies of Q, 1 copy of Qf)
+    # We use kron to repeat Q, then block_diag to append Qf
+    Q_block = jsl.block_diag(jnp.kron(jnp.eye(T), Q), Qf)
+    
+    # Construct the sequence of R matrices
+    R_block = jnp.kron(jnp.eye(T), R)
+    
+    # Determine sizes for the zero blocks (Lambda and Eta variables)
+    # Lambda: T * nc, Eta: T * nc
+    size_lambda_eta = 2 * T * nc
+    zeros_block = jnp.zeros((size_lambda_eta, size_lambda_eta))
+    
+    # Assemble M1_no_ridge
+    # We use block_diag to place Q, R, and the zeros on the diagonal
+    M1_no_ridge = jsl.block_diag(Q_block, R_block, zeros_block)
+    
+    # Add Regularization: M1 = M1_no_ridge + rho * I
+    M1 = M1_no_ridge + jnp.eye(M1_no_ridge.shape[0]) * rho
 
+    # --- 2. Build v1 (Linear Cost Vector) ---
+    
+    # Create change_d vector (xd padded with zeros)
+    # Flatten xd to match the flattened state vector
+    xd_flat = xd.flatten()
+    
+    # Calculate padding size: Total size - size of xd
+    # Total size = (T+1)nx + T*nu + 2*T*nc
+    total_dim = M1.shape[0]
+    pad_size = total_dim - xd_flat.shape[0]
+    
+    # change_d vector: [xd_flat, 0, ..., 0]
+    change_d = jnp.pad(xd_flat, (0, pad_size))
+    
+    v1 = jnp.zeros(total_dim)
+    v1 = v1 + 2 * rho * (w - delta)
+    v1 = v1 - 2 * (M1_no_ridge @ change_d)
 
+    # --- 3. Build M2 (Equality Constraints) ---
+    # We construct M2 by stacking horizontal blocks (columns) and then vertical blocks (rows).
+    # M2 z = v2.  z = [x, u, lambda, eta]
+    
+    identity_T = jnp.eye(T)
+    
+    # --- Part 3a: Dynamics Constraints Rows (T * nx) ---
+    # x_{k+1} = A x_k + B u_k + D lambda_k + d
+    # Rearranged: -A x_k + I x_{k+1} - B u_k - D lambda_k = d
+    
+    # X Columns for Dynamics:
+    # -A is on the main block diagonal (cols 0..T-1)
+    # +I is on the super block diagonal (cols 1..T)
+    
+    # Construct -A blocks repeated T times
+    dyn_A_blk = jnp.kron(identity_T, -A) # Shape (T*nx, T*nx)
+    # Pad to make it (T*nx, (T+1)*nx) -> aligned to the left (x_0 ... x_{T-1})
+    dyn_A_padded = jnp.pad(dyn_A_blk, ((0, 0), (0, nx)))
+    
+    # Construct I blocks repeated T times
+    dyn_I_blk = jnp.kron(identity_T, jnp.eye(nx))
+    # Pad to make it (T*nx, (T+1)*nx) -> aligned to the right (x_1 ... x_T)
+    dyn_I_padded = jnp.pad(dyn_I_blk, ((0, 0), (nx, 0)))
+    
+    # Combine: The dynamics matrix wrt X
+    M2_dyn_x = dyn_A_padded + dyn_I_padded
+    
+    # U, Lambda, Eta columns for Dynamics
+    M2_dyn_u = jnp.kron(identity_T, -B)
+    M2_dyn_l = jnp.kron(identity_T, -D)
+    M2_dyn_e = jnp.zeros((T * nx, T * nc)) # Eta doesn't appear in dynamics
+    
+    # Assemble all Dynamics Rows (excluding initial condition for a moment)
+    M2_dyn = jnp.hstack([M2_dyn_x, M2_dyn_u, M2_dyn_l, M2_dyn_e])
+    
+    # --- Part 3b: Eta Constraints Rows (T * nc) ---
+    # eta_k - E x_k - F lambda_k - H u_k = c
+    # Rearranged: -E x_k - H u_k - F lambda_k + I eta_k = c
+    
+    # X Columns: -E repeated T times. Note: x has T+1 blocks.
+    # E acts on x_0...x_{T-1}. Last x block (x_T) has no constraint here.
+    eta_E_blk = jnp.kron(identity_T, -E)
+    M2_eta_x = jnp.pad(eta_E_blk, ((0,0), (0, nx))) # Pad right to match (T+1)*nx width
+    
+    # Other columns
+    M2_eta_u = jnp.kron(identity_T, -H)
+    M2_eta_l = jnp.kron(identity_T, -F)
+    M2_eta_e = jnp.kron(identity_T, jnp.eye(nc))
+    
+    # Assemble all Eta Rows
+    M2_eta = jnp.hstack([M2_eta_x, M2_eta_u, M2_eta_l, M2_eta_e])
+    
+    # --- Part 3c: Initial Condition Constraint (1 * nx) ---
+    # x_0 = x0  =>  [I, 0, ..., 0] z = x0
+    
+    # Create the row [I (nx,nx), 0 (nx, rest)]
+    M2_init_row = jnp.zeros((nx, total_dim))
+    M2_init_row = M2_init_row.at[:, :nx].set(jnp.eye(nx))
+    
+    # --- Part 3d: Stack all rows to form M2 ---
+    M2 = jnp.vstack([M2_init_row, M2_dyn, M2_eta])
+    
+    # --- 4. Build v2 (RHS Vector) ---
+    # v2 = [x0, d...d, c...c]
+    
+    # Tile d and c, T times
+    v2_dyn = jnp.tile(d, T)
+    v2_eta = jnp.tile(c, T)
+    
+    v2 = jnp.concatenate([x0, v2_dyn, v2_eta])
 
+    return M1, v1, M2, v2
 
+def solve_equality_qp_fast(M1, v1, M2, v2):
+    """
+    Solve:
+        min  z^T M1 z + v1^T z
+        s.t. M2 z = v2
 
+    via Schur complement. Requires M1 symmetric positive definite
+    and M2 full row-rank.
+
+    Returns z (primal).
+    """
+    A = 2.0 * M1     # A is SPD if M1 is SPD
+    B = M2
+
+    # Cholesky of A (LA lower-triangular such that A = LA @ LA.T)
+    LA = jnp.linalg.cholesky(A)
+
+    # Solve A^{-1} B.T and A^{-1} v1 using cho_solve with lower=True
+    Ainv_BT = jax.scipy.linalg.cho_solve((LA, True), B.T)   # shape (n, m)
+    Ainv_v1 = jax.scipy.linalg.cho_solve((LA, True), v1)    # shape (n,)
+
+    # Schur complement S = B @ A^{-1} @ B^T  (shape m x m)
+    S = B @ Ainv_BT
+
+    # Right-hand side is -v2 - B @ A^{-1} v1  (note the minus)
+    rhs_lambda = -v2 - (B @ Ainv_v1)
+
+    # Solve S lambda = rhs_lambda with Cholesky (S should be SPD if constraints independent)
+    LS = jnp.linalg.cholesky(S)
+    lam = jax.scipy.linalg.cho_solve((LS, True), rhs_lambda)
+
+    # Recover z: z = -A^{-1} v1 - A^{-1} B.T lambda
+    z = -Ainv_v1 - (Ainv_BT @ lam)
+    return z
