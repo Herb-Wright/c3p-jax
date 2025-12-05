@@ -25,10 +25,14 @@ def create_rand_lcs_system(
     return LCSMatrices(A=A, B=B, D=D, d=d, E=E, F=F, H=H, c=c)
 
 
-def create_c3_problem_from_lcs(lcs: LCSMatrices, nx: int, nu: int, T: int, n_iters: int) -> C3Problem:
+def create_c3_problem_from_lcs(key: jax.random.PRNGKey, lcs: LCSMatrices, nx: int, nu: int, T: int, n_iters: int) -> C3Problem:
     c3_problem = C3Problem()
-    c3_problem.Q = jnp.eye(nx)
-    c3_problem.R = jnp.eye(nu)
+    # c3_problem.Q = jnp.eye(nx)
+    c3_problem.Q = jax.random.normal(key, (nx, nx))
+    c3_problem.Q = c3_problem.Q.T @ c3_problem.Q
+    # c3_problem.R = jnp.eye(nu)
+    c3_problem.R = jax.random.normal(key, (nu, nu))
+    c3_problem.R = c3_problem.R.T @ c3_problem.R
     c3_problem.set_lcs_matrices(lcs)
     c3_problem.Qf = jnp.eye(nx)
     c3_problem.xd = jnp.zeros([T+1, nx])
@@ -48,7 +52,7 @@ if __name__ == "__main__":
     n_iter = 3
 
     get_c3_problem_vmap = jax.jit(jax.vmap(
-        lambda k: create_c3_problem_from_lcs(create_rand_lcs_system(k, nx, nu, nc), nx, nu, T, n_iter)
+        lambda k: create_c3_problem_from_lcs(k, create_rand_lcs_system(k, nx, nu, nc), nx, nu, T, n_iter)
     ))
 
     c3p_vmap_jit = jax.jit(jax.vmap(lambda p: c3p(p, T, n_iter)))

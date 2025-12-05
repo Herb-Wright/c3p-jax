@@ -36,4 +36,3 @@ from c3p_jax import (
 
 sol: C3Solution = c3p_jit(c3_problem, T, n_iter)
 ```
-

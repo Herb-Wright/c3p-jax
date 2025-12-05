@@ -79,9 +79,9 @@ class C3Solution:
     """
     The solution to the C3 problem: `x`, `u`, and `forces`
     """
-    x: jnp.ndarray  # (T+1, n_x)
-    u: jnp.ndarray  # (T, n_u)
-    forces: jnp.ndarray  # (T, n_c)
+    x: jnp.ndarray  # (T+1, nx)
+    u: jnp.ndarray  # (T, nu)
+    forces: jnp.ndarray  # (T, nc)
 
 
 
@@ -358,7 +358,7 @@ def build_qp_matrices(
 
         # xₖ coefficient: -A
         M2 = place(M2, -A, r0, rx)
-        # x_{k+1} coefficient: +I
+        # xₖ₊₁ coefficient: +I
         M2 = place(M2, jnp.eye(nx), r0, rx_next)
         # uₖ coefficient: -B
         M2 = place(M2, -B, r0, ru)
@@ -416,8 +416,8 @@ def build_qp_matrices_optimized(
     delta: jnp.ndarray, 
     T: int, 
     rho: jnp.ndarray,  
-    x0: jnp.ndarray,  # (n_x)
-    xd: jnp.ndarray,  # (T+1, n_x)
+    x0: jnp.ndarray,  # (nx)
+    xd: jnp.ndarray,  # (T+1, nx)
     Qf: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
@@ -435,7 +435,7 @@ def build_qp_matrices_optimized(
     
     # --- 1. Build M1 (Cost Matrix) ---
     # M1 is a block diagonal matrix. 
-    # Structure: [ BlkDiag(Q...Q, Qf), BlkDiag(R...R), 0...0 ]
+    # Structure: [ BlkDiag(Q...Q, Q), BlkDiag(R...R), 0...0 ]
     
     # Construct the sequence of Q matrices (T copies of Q, 1 copy of Qf)
     # We use kron to repeat Q, then block_diag to append Qf
@@ -550,13 +550,13 @@ def build_qp_matrices_optimized(
 def solve_equality_qp_fast(M1, v1, M2, v2):
     """
     Solve:
-        min  z^T M1 z + v1^T z
-        s.t. M2 z = v2
+        min  zᵀ M₁ z + v₁ᵀ z
+        s.t. M₂ z = v₂
 
     via Schur complement. Requires M1 symmetric positive definite
     and M2 full row-rank.
 
-    Returns z (primal).
+    Returns z (solution).
     """
     A = 2.0 * M1     # A is SPD if M1 is SPD
     B = M2
@@ -564,20 +564,20 @@ def solve_equality_qp_fast(M1, v1, M2, v2):
     # Cholesky of A (LA lower-triangular such that A = LA @ LA.T)
     LA = jnp.linalg.cholesky(A)
 
-    # Solve A^{-1} B.T and A^{-1} v1 using cho_solve with lower=True
+    # Solve A⁻¹ Bᵀ and A⁻¹ v1 using cho_solve with lower=True
     Ainv_BT = jax.scipy.linalg.cho_solve((LA, True), B.T)   # shape (n, m)
     Ainv_v1 = jax.scipy.linalg.cho_solve((LA, True), v1)    # shape (n,)
 
-    # Schur complement S = B @ A^{-1} @ B^T  (shape m x m)
+    # Schur complement S = B A⁻¹ Bᵀ  (shape m x m)
     S = B @ Ainv_BT
 
-    # Right-hand side is -v2 - B @ A^{-1} v1  (note the minus)
+    # Right-hand side is -v₂ - B A⁻¹ v₁  (note the minus)
     rhs_lambda = -v2 - (B @ Ainv_v1)
 
     # Solve S lambda = rhs_lambda with Cholesky (S should be SPD if constraints independent)
     LS = jnp.linalg.cholesky(S)
     lam = jax.scipy.linalg.cho_solve((LS, True), rhs_lambda)
 
-    # Recover z: z = -A^{-1} v1 - A^{-1} B.T lambda
+    # Recover z: z = -A⁻¹ v₁ - A⁻¹ Bᵀ lambda
     z = -Ainv_v1 - (Ainv_BT @ lam)
     return z
