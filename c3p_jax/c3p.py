@@ -82,8 +82,6 @@ class C3Solution:
     x: jnp.ndarray  # (T+1, n_x)
     u: jnp.ndarray  # (T, n_u)
     forces: jnp.ndarray  # (T, n_c)
-    # costs: jnp.ndarray
-    # violations: jnp.ndarray
 
 
 
@@ -101,7 +99,7 @@ def c3p(c3_problem: C3Problem, T: int, n_iters: int, end_on_qp: bool = True) -> 
             w =  c3_problem.rho[i-1] * w / rho
 
         # z step
-        M1, v1, M2, v2 = build_qp_matrices_optimized(
+        M1, v1, M2, v2 = build_qp_matrices(
             c3_problem.get_lcs_matrices(), c3_problem.Q, c3_problem.R, w, delta, T, rho, 
             c3_problem.x0, c3_problem.xd, c3_problem.Qf
         )
@@ -114,7 +112,7 @@ def c3p(c3_problem: C3Problem, T: int, n_iters: int, end_on_qp: bool = True) -> 
         w = w + z - delta
     
     if end_on_qp:
-        M1, v1, M2, v2 = build_qp_matrices_optimized(
+        M1, v1, M2, v2 = build_qp_matrices(
             c3_problem.get_lcs_matrices(), c3_problem.Q, c3_problem.R, w, delta, T, rho, 
             c3_problem.x0, c3_problem.xd, c3_problem.Qf
         )
