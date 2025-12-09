@@ -12,7 +12,7 @@ def create_rho_schedule(
     var_weights: jnp.ndarray, 
     mult: float = 8, 
     offset: int = 5, 
-    start_with_0_rho: bool = True,
+    start_with_0_rho: bool = False,
 ) -> jnp.ndarray:
     rho = jnp.outer(mult ** (jnp.arange(n_iter, dtype=var_weights.dtype) - offset), var_weights)
     if start_with_0_rho:

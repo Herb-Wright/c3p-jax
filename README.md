@@ -20,9 +20,8 @@ uv pip install .
 Then you can run the example
 
 ```sh
-uv pip install matplotlib scipy tqdm
-uv pip install https://github.com/AndyLamperski/lemkelcp.git
-python examples/cartpole_with_soft_walls.py
+uv pip install mujoco mujoco-mjx
+python examples/mujoco_cube.py
 ```
 
 Or use it C3+ your own
@@ -36,3 +35,7 @@ from c3p_jax import (
 
 sol: C3Solution = c3p_jit(c3_problem, T, n_iter)
 ```
+
+
+
+
