@@ -92,6 +92,7 @@ def c3p(c3_problem: C3Problem, T: int, n_iters: int, end_on_qp: bool = True) -> 
     n_vars = (T+1)*c3_problem.nx() + T*c3_problem.nu() + 2*T*c3_problem.nc()
     delta = jnp.zeros(n_vars)
     w = jnp.zeros(n_vars)
+    # delta = delta.at[:(T+1)*c3_problem.nx()].set(jnp.tile(c3_problem.x0, T+1))
 
     for i in range(n_iters):
         rho = c3_problem.rho[i]
@@ -106,7 +107,7 @@ def c3p(c3_problem: C3Problem, T: int, n_iters: int, end_on_qp: bool = True) -> 
         z = solve_equality_qp_fast(M1, v1, M2, v2)
 
         # λ step
-        delta = project_step(z, w, T, c3_problem.nc())
+        delta = project_step(z, w, T, rho, c3_problem.nc())
 
         # update w
         w = w + z - delta
@@ -146,7 +147,7 @@ def c3p_with_costs(
             c3_problem.x0, c3_problem.xd, c3_problem.Qf
         )
         z = solve_equality_qp(M1, v1, M2, v2)
-        delta = project_step(z, w, T, c3_problem.nc())
+        delta = project_step(z, w, T, rho, c3_problem.nc())
         costs = costs.at[i].set(_eval_cost(delta, c3_problem, T))
         violations = violations.at[i].set(jnp.sum(jnp.abs(M2 @ delta - v2)))
         w = w + z - delta
@@ -195,8 +196,11 @@ def _eval_cost(delta: jnp.ndarray, c3_problem: C3Problem, T) -> jnp.ndarray:
     
 
 
-def project_step(z: jnp.ndarray, w: jnp.ndarray, T: int, n_c: int, mult: float = 1.0) -> jnp.ndarray:
+def project_step(z: jnp.ndarray, w: jnp.ndarray, T: int, rho: jnp.ndarray, n_c: int) -> jnp.ndarray:
     """solves the C3+ ADMM projection step, returning δ, where λ ⟂ η"""
+    rho_lambda = rho[-2*T*n_c:-T*n_c]
+    rho_eta = rho[-T*n_c:]
+    mult = jnp.sqrt(rho_eta / rho_lambda)
     vars_not = z + w
     new_delta = jnp.copy(vars_not)
     lambda_not = vars_not[-2*T*n_c:-T*n_c]
